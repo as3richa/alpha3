@@ -7,7 +7,7 @@ class ConnectK:
         self._rows = rows
         self._columns = columns
         self._k = k
-        self._position = np.zeros((2, rows, columns), dtype=bool)
+        self._position = np.zeros((rows, columns, 2), dtype=bool)
         self._outcome = None
 
     def moves(self):
@@ -31,7 +31,7 @@ class ConnectK:
         child = copy(self)
 
         child._position = np.copy(np.flip(self._position, 0))
-        child._position[1, row, column] = True
+        child._position[row, column, 1] = True
 
         child._check_for_loss(row, column)
 
@@ -60,9 +60,9 @@ class ConnectK:
             string += "#"
 
             for column in range(self._columns):
-                if self._position[0, row, column]:
+                if self._position[row, column, 0]:
                     char = '*'
-                elif self._position[1, row, column]:
+                elif self._position[row, column, 1]:
                     char = '+'
                 else:
                     char = ' '
@@ -76,7 +76,7 @@ class ConnectK:
         return string
 
     def _occupied(self, row, column):
-        return self._position[0, row, column] or self._position[1, row, column]
+        return self._position[row, column, 0] or self._position[row, column, 1]
 
     def _check_for_loss(self, row, column):
         delta = self._k - 1
@@ -87,7 +87,7 @@ class ConnectK:
         left = max(0, column - delta)
         right = min(self._columns - 1, column + delta)
 
-        box = self._position[1, top:bottom+1, left:right+1]
+        box = self._position[top:bottom+1, left:right+1, 1]
 
         vectors = (np.transpose(box[row - top, :]), box[:, column - left], np.diag(box, top - row), np.diag(np.flip(box, 1), top - row))
 
@@ -107,18 +107,3 @@ def _k_connected(vector, k):
             run = 0
 
     return False
-
-game = ConnectK(6, 7, 4)
-print(game)
-print(game.position_tensor())
-print(game.move_tensor())
-
-for column in (3, 2, 2, 1, 1, 0, 1, 0, 0, 1, 0):
-    assert game.outcome() is None
-
-    game = game.play(column)
-    print(game)
-    print(game.position_tensor())
-    print(game.move_tensor())
-
-assert game.outcome() == -1
