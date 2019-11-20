@@ -30,7 +30,13 @@ template <class GameState, class Move> class MCTS {
 
 public:
   struct Leaf {
+  private:
     Node *node;
+
+    Leaf(Node *node_): node(node_) {
+    }
+
+    friend class MCTS;
 
   public:
     bool present() const {
@@ -40,6 +46,12 @@ public:
     const GameState &game_state() const {
       return node->game_state;
     }
+  };
+
+  struct ExpansionEntry {
+    Move move;
+    GameState game_state;
+    double prior_probability;
   };
 
   struct HistoryEntry {
@@ -158,7 +170,7 @@ public:
           ascend_tree(node, node->total_av);
         }
 
-        return Leaf{nullptr};
+        return Leaf(nullptr);
       }
 
       Node *best_child = nullptr;
@@ -187,12 +199,12 @@ public:
     }
 
     assert(!node->expanded());
-    return Leaf{node};
+    return Leaf(node);
   }
 
   void expand_leaf(Leaf leaf,
                    double av,
-                   std::vector<std::pair<GameState, double>> children) {
+                   std::vector<ExpansionEntry> children) {
     Node *node = leaf.node;
     assert(node != nullptr && !node->expanded());
 
@@ -201,11 +213,12 @@ public:
 
     Node *prev_child = nullptr;
 
-    for (const auto &game_state_and_prior : children) {
+    for (const auto &entry: children) {
       Node *child = alloc_node();
 
-      child->game_state = std::move(game_state_and_prior.first);
-      child->prior_probability = game_state_and_prior.second;
+      child->move = std::move(entry->move);
+      child->game_state = std::move(entry->game_state);
+      child->prior_probability = entry->prior_probability;
 
       child->parent = node;
       child->child = nullptr;
