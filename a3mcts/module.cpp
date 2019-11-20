@@ -10,21 +10,23 @@ struct PythonHandle {
   }
 
   PythonHandle(PyObject *object_) : object(object_) {
+  }
+
+  static PythonHandle copy(PyObject *object) {
     Py_INCREF(object);
+    return PythonHandle(object);
   }
 
   PythonHandle(const PythonHandle &) = delete;
 
   PythonHandle(PythonHandle &&other) : object(other.object) {
-    other.object = nullptr;
+    other.object = NULL;
   }
 
   PythonHandle &operator=(const PythonHandle &) = delete;
 
   PythonHandle &operator=(PythonHandle &&other) {
-    if (object != nullptr) {
-      Py_DECREF(object);
-    }
+    Py_XDECREF(object);
 
     object = other.object;
     other.object = nullptr;
@@ -32,292 +34,271 @@ struct PythonHandle {
     return *this;
   }
 
+  void steal() {
+    object = NULL;
+  }
+
   ~PythonHandle() {
-    if (object != nullptr) {
-      Py_DECREF(object);
-    }
+    Py_XDECREF(object);
+  }
+
+  bool null() const {
+    return object == NULL;
   }
 };
 
-struct TypeSpec {
-  const char *name;
-  size_t size;
-  newfunc create;
-  destructor destroy;
-  PyMethodDef *methods;
-  const char *docstring;
-};
-
-static PyObject *create_python_type(const TypeSpec *spec);
-
-struct MCTSInstance {
-  PyObject_HEAD
-  MCTS<PythonHandle, PythonHandle> mcts;
-};
-
-static PyObject *
-mcts_create(PyTypeObject *subtype, PyObject *args, PyObject *kwargs);
-
-static void mcts_destroy(PyObject *self_);
-
-static PyObject *mcts_game_state(PyObject *self, PyObject *args);
-static PyObject *mcts_expanded(PyObject *self, PyObject *args);
-static PyObject *mcts_select_leaf(PyObject *self, PyObject *args);
-static PyObject* mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs);
-
-static PyMethodDef mcts_methods[] = {
-  { "game_state", mcts_game_state, METH_NOARGS, NULL },
-  { "expanded", mcts_expanded, METH_NOARGS, NULL },
-  { "select_leaf", mcts_select_leaf, METH_NOARGS, NULL },
-  { "expand_leaf", (PyCFunction)mcts_expand_leaf, METH_VARARGS | METH_KEYWORDS, NULL },
-  { NULL, NULL, -1, NULL }
-};
-
-const static TypeSpec mcts_typespec = {
-    "MCTS", sizeof(MCTSInstance), mcts_create, mcts_destroy, mcts_methods, NULL};
-
-struct LeafInstance {
-  PyObject_HEAD
-  MCTS<PythonHandle, PythonHandle>::Leaf leaf;
-};
-
-const static TypeSpec leaf_typespec = {
-    "Leaf", sizeof(LeafInstance), NULL, NULL, NULL, NULL};  
-
-static PyObject *get_leaf_type(void);
-
-static PyModuleDef module_defn = {
-    PyModuleDef_HEAD_INIT, "a3mcts", NULL, 0, NULL, NULL, NULL, NULL, NULL};
-
-extern "C" {
-
-PyObject *PyInit_a3mcts(void) {
-  PyObject *module = PyModule_Create(&module_defn);
-
-  if (module == NULL) {
-    return NULL;
+static bool assert_tuple_length(PyObject *tuple, size_t length) {
+  if (PyTuple_Check(tuple) && (size_t)PyTuple_Size(tuple) == length) {
+    return true;
   }
 
-  PyObject *mcts_type = create_python_type(&mcts_typespec);
+  PyErr_Format(
+      PyExc_TypeError, "expected a tuple of length %u", (unsigned int)length);
 
-  if(mcts_type == NULL) {
-    Py_DECREF(module);
-    return NULL;
-  }
-
-  if (PyModule_AddObject(module, mcts_typespec.name, mcts_type) < 0) {
-    Py_DECREF(module);
-    Py_DECREF(mcts_type);
-    return NULL;
-  }
-
-  PyObject *leaf_type = create_python_type(&leaf_typespec);
-
-  if(leaf_type == NULL) {
-    Py_DECREF(module);
-    return NULL;
-  }
-
-  if (PyModule_AddObject(module, leaf_typespec.name, leaf_type) < 0) {
-    Py_DECREF(module);
-    Py_DECREF(leaf_type);
-    return NULL;
-  }
-
-  return module;
-}
+  return false;
 }
 
-static PyObject *create_python_type(const TypeSpec *spec) {
-  PyTypeObject *type = (PyTypeObject*)PyObject_Malloc(sizeof(PyTypeObject));
+class Trainer {
+  const size_t n_games;
+  const size_t n_evaluations;
+  PyObject *expander;
 
-  if (type == NULL) {
-    return NULL;
-  }
-
-  memset(type, 0, sizeof(PyTypeObject));
-  PyObject_Init((PyObject *)type, &PyType_Type);
-
-  type->tp_name = spec->name;
-  type->tp_basicsize = spec->size;
-  type->tp_new = spec->create;
-  type->tp_dealloc = spec->destroy;
-  type->tp_methods = spec->methods;
-  type->tp_doc = spec->docstring;
-  type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
-
-  if (PyType_Ready(type) < 0) {
-    Py_DECREF(type);
-    return NULL;
-  }
-
-  return (PyObject*)type;
-}
-
-static PyObject *
-mcts_create(PyTypeObject *subtype, PyObject *args, PyObject *kwargs) {
-  PyObject *initial_state;
-  double c_init;
-  double c_base;
-
-  static char keyword_names_str[] = "initial_state\000c_init\000c_base";
-
-  static char *keyword_names[] = {
-      keyword_names_str, keyword_names_str + 14, keyword_names_str + 21, NULL};
-
-  if (!PyArg_ParseTupleAndKeywords(args,
-                                   kwargs,
-                                   "Odd",
-                                   keyword_names,
-                                   &initial_state,
-                                   &c_init,
-                                   &c_base)) {
-    return NULL;
-  }
-
-  MCTSInstance *self = PyObject_New(MCTSInstance, subtype);
-
-  if (self == NULL) {
-    return NULL;
-  }
-
-  new (&self->mcts)
-      MCTS<PythonHandle, PythonHandle>(c_init, c_base, initial_state);
-
-  return (PyObject *)self;
-}
-
-static void mcts_destroy(PyObject *self_) {
-  MCTSInstance *self = (MCTSInstance *)self_;
-  self->mcts.~MCTS();
-}
-
-static PyObject *mcts_game_state(PyObject *self_, PyObject *args) {
-  (void)args;
-
-  MCTSInstance *self = (MCTSInstance*)self_;
-
-  const PythonHandle &game_state = self->mcts.game_state();
-
-  Py_INCREF(game_state.object);
-  return game_state.object;
-}
-
-static PyObject *mcts_expanded(PyObject *self_, PyObject *args) {
-  (void)args;
-
-  MCTSInstance *self = (MCTSInstance*)self_;
-
-  if(self->mcts.expanded()) {
-    Py_RETURN_TRUE;
-  }
-
-  Py_RETURN_FALSE;
-}
-
-static PyObject *mcts_select_leaf(PyObject *self_, PyObject *args) {
-  (void)args;
-
-  MCTSInstance *self = (MCTSInstance*)self_;
-
-  MCTS<PythonHandle, PythonHandle>::Leaf leaf = self->mcts.select_leaf();
-
-  if(!leaf.present()) {
-    Py_RETURN_NONE;
-  }
-
-  PyObject *leaf_type = get_leaf_type();
-
-  if(leaf_type == NULL) {
-    return NULL;
-  }
-
-  LeafInstance *leaf_instance = PyObject_New(LeafInstance, (PyTypeObject*)leaf_type);
-  leaf_instance->leaf = leaf;
-
-  return (PyObject*)leaf_instance;
-}
-
-static PyObject* mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs) {
-  PyObject *leaf_type = get_leaf_type();
-
-  if(leaf_type == NULL) {
-    return NULL;
-  }
-
-  PyObject *leaf;
-  double av;
-  PyObject *children;
-
-  static char keyword_names_str[] = "leaf\000av\000children";
-
-  static char *keyword_names[] = {
-      keyword_names_str, keyword_names_str + 5, keyword_names_str + 8, NULL};
-
-  if (!PyArg_ParseTupleAndKeywords(args,
-                                   kwargs,
-                                   "O!dO",
-                                   keyword_names,
-                                   leaf_type,
-                                   &leaf,
-                                   &av,
-                                   &children)) {
-    return NULL;
-  }
-
-  children = PyObject_GetIter(children);
-
-  if(children == NULL) {
-    return NULL;
-  }
-
+  std::vector<MCTS<PythonHandle, PythonHandle>> trees;
+  std::vector<MCTS<PythonHandle, PythonHandle>::Leaf> leaves;
+  std::vector<size_t> leaf_indices;
   std::vector<MCTS<PythonHandle, PythonHandle>::ExpansionEntry> expansion;
 
-  for(;;) {
-    PyObject *child = PyIter_Next(children);
+  PythonHandle collect_leaves() {
+    leaf_indices.clear();
 
-    if(child == NULL) {
-      break;
-    }
+    PythonHandle leaf_states(PyList_New(0));
 
-    PyObject *move;
-    PyObject *game_state;
-    double prior_probability;
-
-    // FIXME: handle non-tuples
-    if(!PyArg_ParseTuple(child, "OOd", &move, &game_state, &prior_probability)) {
+    if (leaf_states.null()) {
       return NULL;
     }
 
-    MCTS<PythonHandle, PythonHandle>::ExpansionEntry entry = {
-      PythonHandle(move),
-      PythonHandle(game_state),
-      prior_probability
-    };
+    for (size_t i = 0; i < n_games; i++) {
+      leaves[i] = trees[i].select_leaf();
 
-    expansion.push_back(std::move(entry));
+      if (!leaves[i].present()) {
+        continue;
+      }
 
-    Py_DECREF(child);
+      leaf_indices.push_back(i);
+
+      PyObject *leaf_state = leaves[i].game_state().object;
+      Py_INCREF(leaf_state);
+
+      PyList_Append(leaf_states.object, leaf_state);
+    }
+
+    return leaf_states;
   }
 
-  Py_DECREF(children);
+  bool expand_leaves(PythonHandle leaf_states) {
+    PythonHandle expander_args(Py_BuildValue("(N)", leaf_states.object));
 
-  Py_RETURN_NONE;
+    if (expander_args.null()) {
+      return false;
+    }
+
+    leaf_states.steal();
+
+    PythonHandle expander_return_value(
+        PyObject_CallObject(expander, expander_args.object));
+
+    if (expander_return_value.null()) {
+      return false;
+    }
+
+    PythonHandle iterator(PyObject_GetIter(expander_return_value.object));
+
+    if (iterator.null()) {
+      return false;
+    }
+
+    for (size_t i = 0;; i++) {
+      PythonHandle av_and_expansion_seq(PyIter_Next(iterator.object));
+
+      if (av_and_expansion_seq.null()) {
+        if (i < leaf_indices.size()) {
+          PyErr_SetString(PyExc_TypeError,
+                          "too few values in returned sequence");
+          return false;
+        }
+
+        break;
+      }
+
+      if (i >= leaf_indices.size()) {
+        PyErr_SetString(PyExc_TypeError,
+                        "too many values in returned sequence");
+        return false;
+      }
+
+      double av;
+      PyObject *expansion_seq;
+
+      if (!assert_tuple_length(av_and_expansion_seq.object, 2) ||
+          !PyArg_ParseTuple(
+              av_and_expansion_seq.object, "dO", &av, &expansion_seq)) {
+        return false;
+      }
+
+      if (!collect_expansion(expansion_seq)) {
+        return false;
+      }
+
+      const size_t index = leaf_indices[i];
+
+      trees[index].expand_leaf(leaves[index], av, std::move(expansion));
+    }
+
+    return true;
+  }
+
+  bool collect_expansion(PyObject *expansion_seq) {
+    expansion.clear();
+
+    PythonHandle iterator(PyObject_GetIter(expansion_seq));
+
+    if (iterator.null()) {
+      return false;
+    }
+
+    for (;;) {
+      PythonHandle expansion_entry(PyIter_Next(iterator.object));
+
+      if (expansion_entry.null()) {
+        break;
+      }
+
+      PyObject *move;
+      PyObject *game_state;
+      double prior_probability;
+
+      if (!assert_tuple_length(expansion_entry.object, 3) ||
+          !PyArg_ParseTuple(expansion_entry.object,
+                            "OOd",
+                            &move,
+                            &game_state,
+                            &prior_probability)) {
+        return false;
+      }
+
+      MCTS<PythonHandle, PythonHandle>::ExpansionEntry entry = {
+          PythonHandle::copy(move),
+          PythonHandle::copy(game_state),
+          prior_probability};
+
+      expansion.emplace_back(std::move(entry));
+    }
+
+    if (PyErr_Occurred()) {
+      return false;
+    }
+
+    return true;
+  }
+
+public:
+  Trainer(size_t n_games_,
+          double c_init,
+          double c_base,
+          size_t n_evaluations_,
+          PyObject *initial_state_,
+          PyObject *expander_)
+      : n_games(n_games_), n_evaluations(n_evaluations_), expander(expander_),
+        leaves(n_games_) {
+    trees.reserve(n_games_);
+
+    for (size_t i = 0; i < n_games_; i++) {
+      trees.emplace_back(c_init,
+                         c_base,
+                         PythonHandle::copy(initial_state_),
+                         PythonHandle::copy(Py_None));
+    }
+  }
+
+  PyObject *train() {
+    for (size_t i = 0; i < n_evaluations; i++) {
+      PythonHandle leaf_states = collect_leaves();
+
+      if (leaf_states.null()) {
+        return NULL;
+      }
+
+      if (!expand_leaves(std::move(leaf_states))) {
+        return NULL;
+      }
+    }
+
+    return NULL;
+  }
+};
+
+static PyObject *play_training_games(PyObject *args, PyObject *kwargs) {
+  unsigned long n_games;
+  double c_init;
+  double c_base;
+  unsigned long n_evaluations;
+  PyObject *initial_state;
+  PyObject *expander;
+
+  static char n_games_str[] = "n_games";
+  static char c_init_str[] = "c_init";
+  static char c_base_str[] = "c_base";
+  static char n_evaluations_str[] = "n_evaluations";
+  static char initial_state_str[] = "initial_state";
+  static char expander_str[] = "expander";
+
+  static char *keyword_names[] = {n_games_str,
+                                  c_init_str,
+                                  c_base_str,
+                                  n_evaluations_str,
+                                  initial_state_str,
+                                  expander_str,
+                                  NULL};
+
+  if (!PyArg_ParseTupleAndKeywords(args,
+                                   kwargs,
+                                   "kddkO",
+                                   keyword_names,
+                                   &n_games,
+                                   &c_init,
+                                   &c_base,
+                                   &n_evaluations,
+                                   &initial_state,
+                                   &expander)) {
+    return NULL;
+  }
+
+  try {
+    return Trainer(
+               n_games, c_init, c_base, n_evaluations, initial_state, expander)
+        .train();
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
 }
 
-static PyObject *get_leaf_type(void) {
-  PyObject *module = PyState_FindModule(&module_defn);
+static PyMethodDef module_methods[] = {{"play_training_games",
+                                        play_training_games,
+                                        METH_VARARGS | METH_KEYWORDS,
+                                        NULL},
+                                       {NULL, NULL, 0, NULL}};
 
-  PyObject *leaf_type = PyObject_GetAttrString(module, leaf_typespec.name);
+static PyModuleDef module_defn = {PyModuleDef_HEAD_INIT,
+                                  "a3mcts",
+                                  NULL,
+                                  0,
+                                  module_methods,
+                                  NULL,
+                                  NULL,
+                                  NULL,
+                                  NULL};
 
-  if(leaf_type == NULL) {
-    return NULL;
-  }
-
-  if(PyObject_IsInstance(leaf_type, (PyObject*)&PyType_Type) != 1) {
-    // FIXME: do something intelligent here
-    return NULL;
-  }
-
-  return leaf_type;
+extern "C" PyObject *PyInit_a3mcts(void) {
+  return PyModule_Create(&module_defn);
 }
