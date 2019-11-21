@@ -1,14 +1,12 @@
 #include <Python.h>
 #include <stddef.h>
 
-#include <cstdio> // fixme
-
 #include "mcts.h"
 
 struct PythonHandle {
   PyObject *object;
 
-  PythonHandle() : object(nullptr) {
+  PythonHandle() : object(NULL) {
   }
 
   PythonHandle(PyObject *object_) : object(object_) {
@@ -31,7 +29,7 @@ struct PythonHandle {
     Py_XDECREF(object);
 
     object = other.object;
-    other.object = nullptr;
+    other.object = NULL;
 
     return *this;
   }
@@ -51,305 +49,454 @@ struct PythonHandle {
   }
 };
 
+struct TypeSpec {
+  const char *name;
+  size_t size;
+  newfunc create;
+  destructor destroy;
+  PyMethodDef *methods;
+};
+
+static PythonHandle create_type(const TypeSpec *spec);
+
+struct PyMCTS {
+  PyObject_HEAD MCTS<PythonHandle, PythonHandle> mcts;
+};
+
+static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwargs);
+
+static void mcts_destroy(PyObject *self);
+
+static PyObject *mcts_game_state(PyObject *self, PyObject *args);
+static PyObject *mcts_expanded(PyObject *self, PyObject *args);
+static PyObject *mcts_complete(PyObject *self, PyObject *args);
+static PyObject *mcts_collected(PyObject *self, PyObject *args);
+static PyObject *mcts_turns(PyObject *self, PyObject *args);
+static PyObject *mcts_select_leaf(PyObject *self, PyObject *args);
+static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs);
+static PyObject *mcts_move_greedy(PyObject *self, PyObject *args);
+static PyObject *mcts_move_proportional(PyObject *self, PyObject *args);
+static PyObject *mcts_collect_result(PyObject *self, PyObject *args);
+static PyObject *mcts_reset(PyObject *self, PyObject *args, PyObject *kwargs);
+
+static PyMethodDef mcts_methods[] = {
+    {"game_state", mcts_game_state, METH_NOARGS, NULL},
+    {"expanded", mcts_expanded, METH_NOARGS, NULL},
+    {"complete", mcts_complete, METH_NOARGS, NULL},
+    {"collected", mcts_collected, METH_NOARGS, NULL},
+    {"turns", mcts_turns, METH_NOARGS, NULL},
+    {"select_leaf", mcts_select_leaf, METH_NOARGS, NULL},
+    {"expand_leaf", (PyCFunction)mcts_expand_leaf, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"move_greedy", mcts_move_greedy, METH_NOARGS, NULL},
+    {"move_proportional", mcts_move_proportional, METH_NOARGS, NULL},
+    {"collect_result", mcts_collect_result, METH_NOARGS, NULL},
+    {"reset", (PyCFunction)mcts_reset, METH_VARARGS | METH_KEYWORDS, NULL},
+    {NULL, NULL, -1, NULL}};
+
+const static TypeSpec mcts_typespec = {
+    "MCTS", sizeof(PyMCTS), mcts_create, mcts_destroy, mcts_methods};
+
+static PyModuleDef module_defn = {
+    PyModuleDef_HEAD_INIT, "a3mcts", NULL, 0, NULL, NULL, NULL, NULL, NULL};
+
+static bool assert_tuple_length(PyObject *tuple, size_t length);
+
+template <class Iterator, class Fn>
+static PythonHandle iterator_to_list(Iterator begin, Iterator end, Fn fn) {
+  PythonHandle list(PyList_New((Py_ssize_t)(end - begin)));
+
+  auto it = begin;
+
+  for (size_t i = 0; i < (size_t)(end - begin); i++) {
+    PythonHandle element(fn(*(it++)));
+
+    if (element.null()) {
+      return PythonHandle(NULL);
+    }
+
+    PyList_SET_ITEM(list.object, (Py_ssize_t)i, element.steal());
+  }
+
+  return list;
+}
+
+extern "C" PyObject *PyInit_a3mcts(void) {
+  PythonHandle module(PyModule_Create(&module_defn));
+
+  if (module.null()) {
+    return NULL;
+  }
+
+  PythonHandle mcts_type(create_type(&mcts_typespec));
+
+  if (mcts_type.null()) {
+    return NULL;
+  }
+
+  if (PyModule_AddObject(module.object, mcts_typespec.name, mcts_type.object) < 0) {
+    return NULL;
+  }
+
+  mcts_type.steal();
+
+  return module.steal();
+}
+
+static PythonHandle create_type(const TypeSpec *spec) {
+  void *buffer = PyObject_Malloc(sizeof(PyTypeObject));
+
+  if (buffer == NULL) {
+    return PythonHandle(NULL);
+  }
+
+  memset(buffer, 0, sizeof(PyTypeObject));
+  PyObject_Init((PyObject *)buffer, &PyType_Type);
+
+  PythonHandle type((PyObject *)buffer);
+
+  auto tp = (PyTypeObject *)type.object;
+  tp->tp_name = spec->name;
+  tp->tp_basicsize = spec->size;
+  tp->tp_new = spec->create;
+  tp->tp_dealloc = spec->destroy;
+  tp->tp_methods = spec->methods;
+  tp->tp_flags = Py_TPFLAGS_DEFAULT;
+
+  if (PyType_Ready(tp) < 0) {
+    return PythonHandle(NULL);
+  }
+
+  return type;
+}
+
+static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwargs) {
+  PyObject *initial_state;
+  double c_init;
+  double c_base;
+
+  static char c_init_str[] = "c_init";
+  static char c_base_str[] = "c_base";
+  static char initial_state_str[] = "initial_state";
+
+  static char *keyword_names[] = {c_init_str, c_base_str, initial_state_str, NULL};
+
+  if (!PyArg_ParseTupleAndKeywords(
+          args, kwargs, "ddO", keyword_names, &c_init, &c_base, &initial_state)) {
+    return NULL;
+  }
+
+  PythonHandle self(PyObject_New(PyObject, type));
+
+  if (self.null()) {
+    return NULL;
+  }
+
+  void *location = &((PyMCTS *)self.object)->mcts;
+
+  try {
+    new (location) MCTS<PythonHandle, PythonHandle>(
+        c_init, c_base, PythonHandle::copy(initial_state), PythonHandle::copy(Py_None));
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  return self.steal();
+}
+
+static void mcts_destroy(PyObject *self) {
+  auto &mcts = ((PyMCTS *)self)->mcts;
+  mcts.~MCTS();
+  Py_TYPE(self)->tp_free(self);
+}
+
+static PyObject *mcts_game_state(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+  auto game_state = PythonHandle::copy(mcts.game_state().object);
+  return game_state.steal();
+}
+
+static PyObject *mcts_expanded(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.expanded()) {
+    Py_RETURN_TRUE;
+  }
+
+  Py_RETURN_FALSE;
+}
+
+static PyObject *mcts_complete(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.complete()) {
+    Py_RETURN_TRUE;
+  }
+
+  Py_RETURN_FALSE;
+}
+
+static PyObject *mcts_collected(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.collected()) {
+    Py_RETURN_TRUE;
+  }
+
+  Py_RETURN_FALSE;
+}
+
+static PyObject *mcts_turns(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+  return PyLong_FromSize_t(mcts.turns());
+}
+
+static PyObject *mcts_select_leaf(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  auto leaf = mcts.select_leaf();
+
+  if (leaf == NULL) {
+    Py_RETURN_NONE;
+  }
+
+  PythonHandle capsule(PyCapsule_New((void *)leaf, "Node", NULL));
+
+  if (capsule.null()) {
+    return NULL;
+  }
+
+  auto game_state = PythonHandle::copy(leaf->state().object);
+
+  PythonHandle tuple(PyTuple_New(2));
+
+  if (tuple.null()) {
+    return NULL;
+  }
+
+  PyTuple_SET_ITEM(tuple.object, 0, capsule.steal());
+  PyTuple_SET_ITEM(tuple.object, 1, game_state.steal());
+
+  return tuple.steal();
+}
+
+static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs) {
+  PyObject *leaf_capsule;
+  double av;
+  PyObject *expansion_sequence;
+
+  static char leaf_str[] = "leaf";
+  static char av_str[] = "av";
+  static char expansion_str[] = "expansion";
+
+  static char *keyword_names[] = {leaf_str, av_str, expansion_str, NULL};
+
+  if (!PyArg_ParseTupleAndKeywords(
+          args, kwargs, "OdO", keyword_names, &leaf_capsule, &av, &expansion_sequence)) {
+    return NULL;
+  }
+
+  if (!PyCapsule_CheckExact(leaf_capsule)) {
+    PyErr_SetString(PyExc_TypeError, "bad leaf argument");
+    return NULL;
+  }
+
+  auto leaf = (MCTS<PythonHandle, PythonHandle>::Node *)PyCapsule_GetPointer(leaf_capsule, "Node");
+
+  if (leaf == NULL) {
+    return NULL;
+  }
+
+  PythonHandle expansion_iter(PyObject_GetIter(expansion_sequence));
+
+  if (expansion_iter.null()) {
+    return NULL;
+  }
+
+  std::vector<MCTS<PythonHandle, PythonHandle>::ExpansionEntry> expansion;
+
+  for (;;) {
+    PythonHandle expansion_elem(PyIter_Next(expansion_iter.object));
+
+    if (expansion_elem.null()) {
+      break;
+    }
+
+    if (!assert_tuple_length(expansion_elem.object, 3)) {
+      return NULL;
+    }
+
+    PyObject *move;
+    PyObject *game_state;
+    double prior_probability;
+
+    if (!PyArg_ParseTuple(expansion_elem.object, "OOd", &move, &game_state, &prior_probability)) {
+      return NULL;
+    }
+
+    MCTS<PythonHandle, PythonHandle>::ExpansionEntry expansion_entry = {
+        PythonHandle::copy(move), PythonHandle::copy(game_state), prior_probability};
+
+    expansion.emplace_back(std::move(expansion_entry));
+  }
+
+  if (PyErr_Occurred()) {
+    return NULL;
+  }
+
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  try {
+    mcts.expand_leaf(leaf, av, std::move(expansion));
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
+}
+
+static PyObject *mcts_move_greedy(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (!mcts.expanded()) {
+    PyErr_SetString(PyExc_RuntimeError, "root node hasn't been expanded");
+  }
+
+  if (mcts.complete()) {
+    PyErr_SetString(PyExc_RuntimeError, "game is over");
+  }
+
+  try {
+    return PythonHandle::copy(mcts.move_greedy().object).steal();
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
+}
+
+static PyObject *mcts_move_proportional(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (!mcts.expanded()) {
+    PyErr_SetString(PyExc_RuntimeError, "root node hasn't been expanded");
+  }
+
+  if (mcts.complete()) {
+    PyErr_SetString(PyExc_RuntimeError, "game is over");
+  }
+
+  try {
+    return PythonHandle::copy(mcts.move_proportional().object).steal();
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
+}
+
+static PyObject *mcts_collect_result(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.collected()) {
+    PyErr_SetString(PyExc_RuntimeError, "results were already collected");
+    return NULL;
+  }
+
+  std::pair<double, std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry>> result;
+
+  try {
+    result = mcts.collect_result();
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  PythonHandle av = PyFloat_FromDouble(result.first);
+
+  std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry> &history = result.second;
+
+  PythonHandle history_list = iterator_to_list(
+      history.begin(), history.end(), [](MCTS<PythonHandle, PythonHandle>::HistoryEntry &entry) {
+        const auto lambda = [](std::pair<PythonHandle, double> &move_and_probability) {
+          PythonHandle tuple(
+              Py_BuildValue("Nd", move_and_probability.first.object, move_and_probability.second));
+
+          if (tuple.null()) {
+            return PythonHandle(NULL);
+          }
+
+          move_and_probability.first.steal();
+
+          return tuple;
+        };
+
+        PythonHandle search_probabilities = iterator_to_list(
+            entry.search_probabilities.begin(), entry.search_probabilities.end(), lambda);
+
+        PythonHandle tuple(PyTuple_New(2));
+
+        if (tuple.null()) {
+          return PythonHandle(NULL);
+        }
+
+        PyTuple_SET_ITEM(tuple.object, 0, entry.game_state.steal());
+        PyTuple_SET_ITEM(tuple.object, 1, search_probabilities.steal());
+
+        return tuple;
+      });
+
+  PythonHandle tuple(PyTuple_New(2));
+
+  if (tuple.null()) {
+    return NULL;
+  }
+
+  PyTuple_SET_ITEM(tuple.object, 0, av.steal());
+  PyTuple_SET_ITEM(tuple.object, 1, history_list.steal());
+
+  return tuple.steal();
+}
+
+static PyObject *mcts_reset(PyObject *self, PyObject *args, PyObject *kwargs) {
+  static char initial_state_str[] = "initial_state";
+  static char *keyword_names[] = {initial_state_str, NULL};
+
+  PyObject *initial_state;
+
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keyword_names, &initial_state)) {
+    return NULL;
+  }
+
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  try {
+    mcts.reset(PythonHandle::copy(initial_state), PythonHandle::copy(Py_None));
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
+}
+
 static bool assert_tuple_length(PyObject *tuple, size_t length) {
   if (PyTuple_Check(tuple) && (size_t)PyTuple_Size(tuple) == length) {
     return true;
   }
 
   PyErr_Format(PyExc_TypeError, "expected a tuple of length %u", (unsigned int)length);
-
   return false;
-}
-
-class Trainer {
-  const size_t n_games;
-  const size_t n_evaluations;
-  PyObject *expand;
-
-  std::vector<MCTS<PythonHandle, PythonHandle>> trees;
-  std::vector<MCTS<PythonHandle, PythonHandle>::Leaf> leaves;
-  std::vector<size_t> leaf_indices;
-  std::vector<MCTS<PythonHandle, PythonHandle>::ExpansionEntry> expansion;
-
-  PythonHandle collect_leaves() {
-    leaf_indices.clear();
-
-    PythonHandle leaf_states(PyList_New(0));
-
-    if (leaf_states.null()) {
-      return NULL;
-    }
-
-    for (size_t i = 0; i < n_games; i++) {
-      leaves[i] = trees[i].select_leaf();
-
-      if (!leaves[i].present()) {
-        continue;
-      }
-
-      leaf_indices.push_back(i);
-
-      PyObject *leaf_state = leaves[i].game_state().object;
-      Py_INCREF(leaf_state);
-
-      if (PyList_Append(leaf_states.object, leaf_state) < 0) {
-        Py_DECREF(leaf_state);
-        return NULL;
-      }
-    }
-
-    return leaf_states;
-  }
-
-  bool expand_leaves(PythonHandle leaf_states) {
-    PythonHandle expand_args(Py_BuildValue("(N)", leaf_states.object));
-
-    if (expand_args.null()) {
-      return false;
-    }
-
-    leaf_states.steal();
-
-    PythonHandle expand_return_value(PyObject_CallObject(expand, expand_args.object));
-
-    if (expand_return_value.null()) {
-      return false;
-    }
-
-    PythonHandle iterator(PyObject_GetIter(expand_return_value.object));
-
-    if (iterator.null()) {
-      return false;
-    }
-
-    for (size_t i = 0;; i++) {
-      PythonHandle av_and_expansion_seq(PyIter_Next(iterator.object));
-
-      if (av_and_expansion_seq.null()) {
-        if (PyErr_Occurred()) {
-          return false;
-        }
-
-        if (i < leaf_indices.size()) {
-          PyErr_SetString(PyExc_TypeError, "too few values in returned sequence");
-          return false;
-        }
-
-        break;
-      }
-
-      if (i >= leaf_indices.size()) {
-        PyErr_SetString(PyExc_TypeError, "too many values in returned sequence");
-        return false;
-      }
-
-      double av;
-      PyObject *expansion_seq;
-
-      if (!assert_tuple_length(av_and_expansion_seq.object, 2) ||
-          !PyArg_ParseTuple(av_and_expansion_seq.object, "dO", &av, &expansion_seq)) {
-        return false;
-      }
-
-      if (!collect_expansion(expansion_seq)) {
-        return false;
-      }
-
-      const size_t index = leaf_indices[i];
-
-      trees[index].expand_leaf(leaves[index], av, std::move(expansion));
-    }
-
-    return true;
-  }
-
-  bool collect_expansion(PyObject *expansion_seq) {
-    expansion.clear();
-
-    PythonHandle iterator(PyObject_GetIter(expansion_seq));
-
-    if (iterator.null()) {
-      return false;
-    }
-
-    for (;;) {
-      PythonHandle expansion_entry(PyIter_Next(iterator.object));
-
-      if (expansion_entry.null()) {
-        break;
-      }
-
-      PyObject *move;
-      PyObject *game_state;
-      double prior_probability;
-
-      if (!assert_tuple_length(expansion_entry.object, 3) ||
-          !PyArg_ParseTuple(
-              expansion_entry.object, "OOd", &move, &game_state, &prior_probability)) {
-        return false;
-      }
-
-      MCTS<PythonHandle, PythonHandle>::ExpansionEntry entry = {
-          PythonHandle::copy(move), PythonHandle::copy(game_state), prior_probability};
-
-      expansion.emplace_back(std::move(entry));
-    }
-
-    if (PyErr_Occurred()) {
-      return false;
-    }
-
-    return true;
-  }
-
-  PyObject *collect_results() {
-    PythonHandle results(PyList_New(n_games));
-
-    if (results.null()) {
-      return NULL;
-    }
-
-    for (size_t i = 0; i < n_games; i++) {
-      auto &&mcts = trees[i];
-
-      while (mcts.expanded() && !mcts.complete()) {
-        mcts.move_proportional();
-      }
-
-      MCTS<PythonHandle, PythonHandle>::GameResult game_result = std::move(mcts).finalize_result();
-
-      PythonHandle history(PyList_New(game_result.history.size()));
-
-      for (size_t j = 0; j < game_result.history.size(); j++) {
-        auto &&game_state = game_result.history[j].game_state;
-        auto &&search_probabilities = game_result.history[j].search_probabilities;
-
-        PythonHandle probabilities = PyList_New(search_probabilities.size());
-
-        for (size_t k = 0; k < search_probabilities.size(); k++) {
-          auto &&move = search_probabilities[k].first;
-          auto &&probability = search_probabilities[k].second;
-
-          PyObject *tuple = Py_BuildValue("Nd", move.object, probability);
-
-          if (tuple == NULL) {
-            return NULL;
-          }
-
-          move.steal();
-
-          PyList_SET_ITEM(probabilities.object, k, tuple);
-        }
-
-        PyObject *history_entry = Py_BuildValue("NN", game_state.object, probabilities.object);
-
-        if (history_entry == NULL) {
-          return NULL;
-        }
-
-        game_state.steal();
-        probabilities.steal();
-
-        PyList_SET_ITEM(history.object, j, history_entry);
-      }
-
-      PyObject *result_tuple = Py_BuildValue("dN", game_result.score, history.object);
-
-      if (result_tuple == NULL) {
-        return NULL;
-      }
-
-      history.steal();
-
-      PyList_SET_ITEM(results.object, i, result_tuple);
-    }
-
-    return results.steal();
-  }
-
-public:
-  Trainer(size_t n_games_,
-          size_t n_evaluations_,
-          double c_init,
-          double c_base,
-          PyObject *initial_state_,
-          PyObject *expand_)
-      : n_games(n_games_), n_evaluations(n_evaluations_), expand(expand_), leaves(n_games_) {
-    trees.reserve(n_games_);
-
-    for (size_t i = 0; i < n_games_; i++) {
-      size_t seed = 13 + 37 * i * i * i;
-      trees.emplace_back(
-          c_init, c_base, seed, PythonHandle::copy(initial_state_), PythonHandle::copy(Py_None));
-    }
-  }
-
-  PyObject *train() && {
-    for (size_t i = 0; i < n_evaluations; i++) {
-      PythonHandle leaf_states = collect_leaves();
-
-      if (leaf_states.null()) {
-        return NULL;
-      }
-
-      if (!expand_leaves(std::move(leaf_states))) {
-        return NULL;
-      }
-    }
-
-    return collect_results();
-  }
-};
-
-static PyObject *play_training_games(PyObject *module, PyObject *args, PyObject *kwargs) {
-  (void)module;
-
-  unsigned long n_games;
-  double c_init;
-  double c_base;
-  unsigned long n_evaluations;
-  PyObject *initial_state;
-  PyObject *expand;
-
-  static char n_games_str[] = "n_games";
-  static char n_evaluations_str[] = "n_evaluations";
-  static char c_init_str[] = "c_init";
-  static char c_base_str[] = "c_base";
-  static char initial_state_str[] = "initial_state";
-  static char expand_str[] = "expand";
-
-  static char *keyword_names[] = {
-      n_games_str, n_evaluations_str, c_init_str, c_base_str, initial_state_str, expand_str, NULL};
-
-  if (!PyArg_ParseTupleAndKeywords(args,
-                                   kwargs,
-                                   "kkddOO",
-                                   keyword_names,
-                                   &n_games,
-                                   &n_evaluations,
-                                   &c_init,
-                                   &c_base,
-                                   &initial_state,
-                                   &expand)) {
-    return NULL;
-  }
-
-  try {
-    Trainer trainer(n_games, n_evaluations, c_init, c_base, initial_state, expand);
-    return std::move(trainer).train();
-  } catch (std::bad_alloc &) {
-    PyErr_NoMemory();
-    return NULL;
-  }
-}
-
-static PyMethodDef module_methods[] = {
-    {"play_training_games", (PyCFunction)play_training_games, METH_VARARGS | METH_KEYWORDS, NULL},
-    {NULL, NULL, 0, NULL}};
-
-static PyModuleDef module_defn = {
-    PyModuleDef_HEAD_INIT, "a3mcts", NULL, 0, module_methods, NULL, NULL, NULL, NULL};
-
-extern "C" PyObject *PyInit_a3mcts(void) {
-  return PyModule_Create(&module_defn);
 }

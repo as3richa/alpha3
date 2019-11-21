@@ -1,13 +1,8 @@
 import a3mcts
-from models import ConvNet3x3
 
 from copy import copy
-from random import random
-from time import monotonic
 
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
 
 class ConnectK:
     def __init__(self, rows, columns, k):
@@ -45,7 +40,7 @@ class ConnectK:
         return child
 
     def position_tensor(self):
-        return tf.dtypes.cast(self._position, 'float32') * 2 - 1
+        return self._position.astype('float32')
 
     def outcome(self):
         return self._outcome
@@ -106,99 +101,16 @@ class ConnectK:
 
         return False
 
-initial_state = ConnectK(6, 7, 4)
-model = ConvNet3x3(7);
+def expand(state):
+    moves = state.moves()
+    return 0.0, [(move, state.play(move), 1.0 / len(moves)) for move in moves]
 
-def expand(states):
-    tensor = tf.stack([state.position_tensor() for state in states], 0)
-    predictions = model(tensor)
+mcts = a3mcts.MCTS(c_init=1.25, c_base=19652, initial_state=ConnectK(6, 7, 4))
 
-    results = [None] * len(states)
+for i in range(100000):
+    leaf, state = mcts.select_leaf()
+    mcts.expand_leaf(leaf, *expand(state))
 
-    for i in range(len(states)):
-        outcome = states[i].outcome()
-
-        if outcome is not None:
-            results[i] = (outcome, [])
-            continue
-
-        av = float(predictions[i, 0])
-        expansion = [(move, states[i].play(move), predictions[i, move]) for move in states[i].moves()]
-
-        results[i] = (av, expansion)
-
-    return results
-
-started_at = monotonic()
-log = lambda message: print("%06.2f %s" % (monotonic() - started_at, message))
-
-optimizer = keras.optimizers.Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, amsgrad=False)
-
-def loss(y_true, y_pred):
-    return (keras.losses.mean_squared_error(y_true[:, 0], y_pred[:, 0]) +
-        keras.losses.categorical_crossentropy(y_true[:, 1:], y_pred[:, 1:], from_logits=False, label_smoothing=0))
-
-for epoch in range(2**32):
-    n_games = 64
-    n_evaluations = 300
-
-    log(f"epoch {epoch}")
-    game_results = a3mcts.play_training_games(n_games=n_games, n_evaluations=n_evaluations, c_init=1.25, c_base=19650, initial_state=initial_state, expand=expand)
-
-    log(f"done {n_games} games")
-
-    n_examples = sum(len(history) for _, history in game_results);
-
-    log(f"training against {n_examples} examples")
-
-    outcome_vector = np.zeros((n_examples,), 'float32')
-    examples = np.zeros((n_examples, 6, 7, 2), 'float32')
-    labels = np.zeros((n_examples, 8), 'float32')
-
-    wins = 0
-    draws = 0
-    losses = 0
-
-    for outcome, _ in game_results:
-        if abs(outcome - 1) < 1e-6:
-            wins += 1
-        elif abs(outcome) < 1e-6:
-            draws += 1
-        else:
-            losses += 1
-
-    log(f"{wins} win(s), {draws} draw(s), {losses} loss(es)")
-
-    longest = max(len(history) for _, history in game_results)
-    average = sum(len(history) for _, history in game_results) / len(game_results)
-    log(f"longest game: {longest}; average length: {average}")
-
-    k = 0
-
-    for outcome, history in game_results:
-        for state, search_probabilities in history:
-            examples[k, :, :] = state.position_tensor()
-
-            labels[k, 0] = outcome
-
-            for move, probability in search_probabilities:
-                labels[k, 1 + move] = probability
-
-            k += 1
-            outcome *= -1
-
-    with tf.GradientTape() as tape:
-        predictions = model(examples)
-        loss_value = tf.math.reduce_sum(loss(y_true=labels, y_pred=predictions), 0)
-    
-    gradients = tape.gradient(loss_value, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-    min_pred, max_pred, avg_pred = (tf.math.reduce_min(predictions[0, :]), tf.math.reduce_max(predictions[0, :]), tf.math.reduce_sum(predictions[0, :]) / n_examples)
-
-    log(f"min predicted outcome: {min_pred}; max: {max_pred}; average: {avg_pred}")
-
-    log(f"total loss: {float(loss_value)}; average: {float(loss_value) / n_examples}")
-
-    if epoch % 10 == 0:
-        model.save_weights(f'epoch{epoch}.h5')
+while mcts.expanded() and not mcts.complete():
+    print(f"move={mcts.move_proportional()}")
+    print(mcts.game_state())

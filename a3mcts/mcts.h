@@ -1,12 +1,17 @@
+#undef NDEBUG
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <random>
+#include <utility>
 #include <vector>
 
-template <class GameState, class Move> class MCTS {
+template <class GameState, class Move, class Generator = std::default_random_engine> class MCTS {
+public:
   struct Node {
+  private:
     Move move;
     GameState game_state;
 
@@ -26,29 +31,16 @@ template <class GameState, class Move> class MCTS {
     bool terminal() const {
       return expanded() && child == nullptr;
     }
-  };
-
-public:
-  struct Leaf {
-  private:
-    Node *node;
-
-    Leaf(Node *node_) : node(node_) {
-    }
 
     friend class MCTS;
 
   public:
-    Leaf() : node(nullptr) {
+    const Move &prev_move() {
+      return move;
     }
 
-    bool present() const {
-      return node != nullptr;
-    }
-
-    const GameState &game_state() const {
-      assert(present());
-      return node->game_state;
+    const GameState &state() {
+      return game_state;
     }
   };
 
@@ -63,11 +55,6 @@ public:
     std::vector<std::pair<Move, double>> search_probabilities;
   };
 
-  struct GameResult {
-    double score;
-    std::vector<HistoryEntry> history;
-  };
-
 private:
   const double c_init;
   const double c_base;
@@ -77,7 +64,7 @@ private:
 
   std::vector<HistoryEntry> history;
 
-  std::default_random_engine generator;
+  Generator generator;
 
   Node *alloc_node() {
     if (freelist != nullptr) {
@@ -112,10 +99,12 @@ private:
     }
   }
 
-  void move(Node *new_root) {
+  const Move *play_move(Node *new_root) {
     const size_t denom = root->n_visits - 1;
 
     std::vector<std::pair<Move, double>> search_probabilities;
+
+    size_t new_root_index = SIZE_MAX;
 
     for (Node *child = root->child; child != nullptr;) {
       search_probabilities.emplace_back(std::move(child->move),
@@ -123,7 +112,9 @@ private:
 
       Node *next = child->sibling;
 
-      if (child != new_root) {
+      if (child == new_root) {
+        new_root_index = search_probabilities.size() - 1;
+      } else {
         free_subtree(child);
       }
 
@@ -131,27 +122,32 @@ private:
     }
 
     HistoryEntry entry = {std::move(root->game_state), std::move(search_probabilities)};
-
     history.emplace_back(std::move(entry));
+
+    const Move *move = nullptr;
 
     if (new_root != nullptr) {
       new_root->move = std::move(root->move);
       new_root->parent = nullptr;
       new_root->sibling = nullptr;
+
+      assert(new_root_index != SIZE_MAX);
+      move = &history.back().search_probabilities[new_root_index].first;
     }
 
     free_node(root);
     root = new_root;
+
+    return move;
   }
 
 public:
   MCTS(double c_init_,
        double c_base_,
-       size_t seed,
        GameState initial_state = GameState(),
        Move phony_move = Move())
       : c_init(c_init_), c_base(c_base_), root(nullptr), freelist(nullptr), history(),
-        generator(seed) {
+        generator(std::random_device{}()) {
     reset(std::move(initial_state), std::move(phony_move));
   }
 
@@ -175,15 +171,22 @@ public:
   }
 
   bool expanded() const {
-    return root->expanded();
+    return root != nullptr && root->expanded();
   }
 
   bool complete() const {
-    assert(root->expanded());
-    return root->terminal() || root->n_visits == 1;
+    return root != nullptr && root->expanded() && root->terminal();
   }
 
-  Leaf select_leaf() {
+  bool collected() const {
+    return root == nullptr;
+  }
+
+  size_t turns() const {
+    return history.size() + 1;
+  }
+
+  Node *select_leaf() {
     Node *node = root;
 
     while (node->expanded()) {
@@ -192,7 +195,7 @@ public:
           ascend_tree(node, node->total_av);
         }
 
-        return Leaf(nullptr);
+        return nullptr;
       }
 
       Node *best_child = nullptr;
@@ -219,15 +222,14 @@ public:
     }
 
     assert(!node->expanded());
-    return Leaf(node);
+    return node;
   }
 
-  void expand_leaf(Leaf leaf, double av, std::vector<ExpansionEntry> &&expansion) {
-    Node *node = leaf.node;
-    assert(node != nullptr && !node->expanded());
+  void expand_leaf(Node *leaf, double av, std::vector<ExpansionEntry> &&expansion) {
+    assert(leaf != nullptr && !leaf->expanded());
 
     if (expansion.empty()) {
-      node->child = nullptr;
+      leaf->child = nullptr;
     } else {
       Node *prev_child = nullptr;
 
@@ -238,14 +240,14 @@ public:
         child->game_state = std::move(entry.game_state);
         child->prior_probability = entry.prior_probability;
 
-        child->parent = node;
+        child->parent = leaf;
         child->child = nullptr;
 
         child->n_visits = 0;
         child->total_av = 0.0;
 
         if (prev_child == nullptr) {
-          node->child = child;
+          leaf->child = child;
         } else {
           prev_child->sibling = child;
         }
@@ -256,11 +258,11 @@ public:
       prev_child->sibling = nullptr;
     }
 
-    ascend_tree(node, av);
+    ascend_tree(leaf, av);
   }
 
-  void move_greedy() {
-    assert(root->expanded() && !root->terminal());
+  const Move &move_greedy() {
+    assert(expanded() && !complete());
 
     Node *best = root->child;
 
@@ -270,11 +272,28 @@ public:
       }
     }
 
-    move(best);
+    return *play_move(best);
   }
 
-  void move_proportional() {
-    assert(root->expanded() && !root->terminal());
+  const Move &move_proportional() {
+    assert(expanded() && !complete());
+
+    if (root->n_visits == 1) {
+      size_t n_children = 1;
+      Node *chosen = root->child;
+
+      for (Node *child = chosen->sibling; child != nullptr; child = child->sibling) {
+        std::uniform_int_distribution<size_t> distribution(0, n_children);
+
+        if (distribution(generator) == 0) {
+          chosen = child;
+        }
+
+        n_children++;
+      }
+
+      return *play_move(chosen);
+    }
 
     std::uniform_int_distribution<size_t> distribution(0, root->n_visits - 2);
     size_t selector = distribution(generator);
@@ -283,8 +302,7 @@ public:
       assert(child != nullptr);
 
       if (selector < child->n_visits) {
-        move(child);
-        return;
+        return *play_move(child);
       }
 
       selector -= child->n_visits;
@@ -293,16 +311,21 @@ public:
     assert(false);
   }
 
-  GameResult finalize_result() && {
-    assert(root->terminal() || !root->expanded());
+  std::pair<double, std::vector<HistoryEntry>> collect_result() {
+    double score = root->terminal() ? root->total_av : 0.0;
 
-    const double score = root->terminal() ? root->total_av : 0.0;
+    play_move(nullptr);
 
-    move(nullptr);
+    if (history.size() % 2 == 1) {
+      score *= -1;
+    }
 
-    const double player1_score = (history.size() % 2 == 1) ? score : -score;
+    auto result = std::make_pair(score, std::move(history));
+    history.clear();
 
-    return GameResult{player1_score, std::move(history)};
+    assert(collected());
+
+    return result;
   }
 
   void reset(GameState initial_state = GameState(), Move phony_move = Move()) {
