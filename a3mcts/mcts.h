@@ -186,6 +186,31 @@ public:
     return history.size() + 1;
   }
 
+  void add_dirichlet_noise(double alpha) {
+    assert(expanded() && !complete());
+
+    std::gamma_distribution<double> gamma(alpha, 1.0);
+
+    std::vector<double> noise;
+    double sum = 0.0;
+
+    for (Node *child = root->child; child != nullptr; child = child->sibling) {
+      noise.push_back(gamma(generator));
+      sum += noise.back();
+    }
+
+    for (auto &value : noise) {
+      value /= sum;
+    }
+
+    auto it = noise.begin();
+
+    for (Node *child = root->child; child != nullptr; child = child->sibling) {
+      child->prior_probability += *it;
+      ++it;
+    }
+  }
+
   Node *select_leaf() {
     Node *node = root;
 

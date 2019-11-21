@@ -72,6 +72,7 @@ static PyObject *mcts_expanded(PyObject *self, PyObject *args);
 static PyObject *mcts_complete(PyObject *self, PyObject *args);
 static PyObject *mcts_collected(PyObject *self, PyObject *args);
 static PyObject *mcts_turns(PyObject *self, PyObject *args);
+static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args, PyObject *kwargs);
 static PyObject *mcts_select_leaf(PyObject *self, PyObject *args);
 static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs);
 static PyObject *mcts_move_greedy(PyObject *self, PyObject *args);
@@ -85,6 +86,10 @@ static PyMethodDef mcts_methods[] = {
     {"complete", mcts_complete, METH_NOARGS, NULL},
     {"collected", mcts_collected, METH_NOARGS, NULL},
     {"turns", mcts_turns, METH_NOARGS, NULL},
+    {"add_dirichlet_noise",
+     (PyCFunction)mcts_add_dirichlet_noise,
+     METH_VARARGS | METH_KEYWORDS,
+     NULL},
     {"select_leaf", mcts_select_leaf, METH_NOARGS, NULL},
     {"expand_leaf", (PyCFunction)mcts_expand_leaf, METH_VARARGS | METH_KEYWORDS, NULL},
     {"move_greedy", mcts_move_greedy, METH_NOARGS, NULL},
@@ -254,6 +259,28 @@ static PyObject *mcts_turns(PyObject *self, PyObject *args) {
   (void)args;
   auto &mcts = ((PyMCTS *)self)->mcts;
   return PyLong_FromSize_t(mcts.turns());
+}
+
+static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args, PyObject *kwargs) {
+  static char alpha_str[] = "alpha";
+  static char *keyword_names[] = {alpha_str, NULL};
+
+  double alpha;
+
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "d", keyword_names, &alpha)) {
+    return NULL;
+  }
+
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  try {
+    mcts.add_dirichlet_noise(alpha);
+  } catch (std::bad_alloc &) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
 }
 
 static PyObject *mcts_select_leaf(PyObject *self, PyObject *args) {
