@@ -1,5 +1,3 @@
-#undef NDEBUG
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -8,7 +6,9 @@
 #include <utility>
 #include <vector>
 
-template <class GameState, class Move, class Generator = std::default_random_engine> class MCTS {
+template <class GameState, class Move,
+          class Generator = std::default_random_engine>
+class MCTS {
 public:
   struct Node {
   private:
@@ -24,24 +24,16 @@ public:
     size_t n_visits;
     double total_av;
 
-    bool expanded() const {
-      return n_visits != 0;
-    }
+    bool expanded() const { return n_visits != 0; }
 
-    bool terminal() const {
-      return expanded() && child == nullptr;
-    }
+    bool terminal() const { return expanded() && child == nullptr; }
 
     friend class MCTS;
 
   public:
-    const Move &prev_move() {
-      return move;
-    }
+    const Move &prev_move() { return move; }
 
-    const GameState &state() {
-      return game_state;
-    }
+    const GameState &state() { return game_state; }
   };
 
   struct ExpansionEntry {
@@ -63,6 +55,8 @@ private:
   Node *freelist;
 
   std::vector<HistoryEntry> history;
+
+  size_t searches_this_turn_;
 
   Generator generator;
 
@@ -107,8 +101,9 @@ private:
     size_t new_root_index = SIZE_MAX;
 
     for (Node *child = root->child; child != nullptr;) {
-      search_probabilities.emplace_back(std::move(child->move),
-                                        (denom == 0) ? 0.0 : ((double)child->n_visits / denom));
+      search_probabilities.emplace_back(
+          std::move(child->move),
+          (denom == 0) ? 0.0 : ((double)child->n_visits / denom));
 
       Node *next = child->sibling;
 
@@ -121,7 +116,8 @@ private:
       child = next;
     }
 
-    HistoryEntry entry = {std::move(root->game_state), std::move(search_probabilities)};
+    HistoryEntry entry = {std::move(root->game_state),
+                          std::move(search_probabilities)};
     history.emplace_back(std::move(entry));
 
     const Move *move = nullptr;
@@ -138,23 +134,22 @@ private:
     free_node(root);
     root = new_root;
 
+    searches_this_turn_ = 0;
+
     return move;
   }
 
 public:
-  MCTS(double c_init_,
-       double c_base_,
-       GameState initial_state = GameState(),
+  MCTS(double c_init_, double c_base_, GameState initial_state = GameState(),
        Move phony_move = Move())
-      : c_init(c_init_), c_base(c_base_), root(nullptr), freelist(nullptr), history(),
-        generator(std::random_device{}()) {
+      : c_init(c_init_), c_base(c_base_), root(nullptr), freelist(nullptr),
+        history(), generator(std::random_device{}()) {
     reset(std::move(initial_state), std::move(phony_move));
   }
 
   MCTS(MCTS &&other)
-      : c_init(other.c_init), c_base(other.c_base), root(other.root), freelist(other.freelist),
-        history(std::move(other.history)) {
-  }
+      : c_init(other.c_init), c_base(other.c_base), root(other.root),
+        freelist(other.freelist), history(std::move(other.history)) {}
 
   ~MCTS() {
     free_subtree(root);
@@ -166,24 +161,21 @@ public:
     }
   }
 
-  const GameState &game_state() const {
-    return root->game_state;
-  }
+  const GameState &game_state() const { return root->game_state; }
 
-  bool expanded() const {
-    return root != nullptr && root->expanded();
-  }
+  bool expanded() const { return root != nullptr && root->expanded(); }
 
   bool complete() const {
     return root != nullptr && root->expanded() && root->terminal();
   }
 
-  bool collected() const {
-    return root == nullptr;
-  }
+  bool collected() const { return root == nullptr; }
 
-  size_t turns() const {
-    return history.size() + 1;
+  size_t turns() const { return history.size() + 1; }
+
+  size_t searches_this_turn() const {
+    assert(!collected());
+    return searches_this_turn_;
   }
 
   void add_dirichlet_noise(double alpha) {
@@ -216,23 +208,24 @@ public:
 
     while (node->expanded()) {
       if (node->terminal()) {
-        if (fabs(node->total_av) > 1e-7) {
-          ascend_tree(node, node->total_av);
-        }
-
+        node->n_visits++;
+        ascend_tree(node->parent, -node->total_av);
         return nullptr;
       }
 
       Node *best_child = nullptr;
       double best_score = 0.0;
 
-      for (Node *child = node->child; child != nullptr; child = child->sibling) {
+      for (Node *child = node->child; child != nullptr;
+           child = child->sibling) {
         const double average_av =
             (child->n_visits == 0) ? 0.0 : (child->total_av / child->n_visits);
 
-        const double exploration = log((1 + node->n_visits + c_base) / c_base) + c_init;
+        const double exploration =
+            log((1 + node->n_visits + c_base) / c_base) + c_init;
         const double prior = child->prior_probability;
-        const double u = exploration * prior * sqrt(node->n_visits) / (1 + child->n_visits);
+        const double u =
+            exploration * prior * sqrt(node->n_visits) / (1 + child->n_visits);
 
         const double score = average_av + u;
 
@@ -250,7 +243,8 @@ public:
     return node;
   }
 
-  void expand_leaf(Node *leaf, double av, std::vector<ExpansionEntry> &&expansion) {
+  void expand_leaf(Node *leaf, double av,
+                   std::vector<ExpansionEntry> &&expansion) {
     assert(leaf != nullptr && !leaf->expanded());
 
     if (expansion.empty()) {
@@ -284,6 +278,8 @@ public:
     }
 
     ascend_tree(leaf, av);
+
+    searches_this_turn_++;
   }
 
   const Move &move_greedy() {
@@ -291,7 +287,8 @@ public:
 
     Node *best = root->child;
 
-    for (Node *child = best->sibling; child != nullptr; child = child->sibling) {
+    for (Node *child = best->sibling; child != nullptr;
+         child = child->sibling) {
       if (child->n_visits > best->n_visits) {
         best = child;
       }
@@ -307,7 +304,8 @@ public:
       size_t n_children = 1;
       Node *chosen = root->child;
 
-      for (Node *child = chosen->sibling; child != nullptr; child = child->sibling) {
+      for (Node *child = chosen->sibling; child != nullptr;
+           child = child->sibling) {
         std::uniform_int_distribution<size_t> distribution(0, n_children);
 
         if (distribution(generator) == 0) {
@@ -369,5 +367,7 @@ public:
     root->total_av = 0.0;
 
     history.clear();
+
+    searches_this_turn_ = 0;
   }
 };

@@ -7,7 +7,7 @@ class ConnectK:
         self._rows = rows
         self._columns = columns
         self._k = k
-        self._position = np.zeros((rows, columns, 2), dtype=bool)
+        self._position = np.zeros((2, rows, columns), dtype=bool)
         self._outcome = None
 
     def moves(self):
@@ -31,22 +31,14 @@ class ConnectK:
         child = copy(self)
 
         child._position = np.copy(np.flip(self._position, 0))
-        child._position[row, column, 1] = True
+        child._position[1, row, column] = True
 
-        child._check_for_loss(row, column)
+        child._check_for_game_over(row, column)
 
         return child
 
-    def position_tensor(self):
-        return self._position
-
-    def move_tensor(self):
-        move_tensor = np.zeros((self._columns,), dtype=bool)
-
-        for move in self.moves():
-            move_tensor[move] = True
-
-        return move_tensor
+    def position(self):
+        return self._position.astype('float32')
 
     def outcome(self):
         return self._outcome
@@ -60,9 +52,9 @@ class ConnectK:
             string += "#"
 
             for column in range(self._columns):
-                if self._position[row, column, 0]:
+                if self._position[0, row, column]:
                     char = '*'
-                elif self._position[row, column, 1]:
+                elif self._position[1, row, column]:
                     char = '+'
                 else:
                     char = ' '
@@ -76,9 +68,13 @@ class ConnectK:
         return string
 
     def _occupied(self, row, column):
-        return self._position[row, column, 0] or self._position[row, column, 1]
+        return self._position[0, row, column] or self._position[1, row, column]
 
-    def _check_for_loss(self, row, column):
+    def _check_for_game_over(self, row, column):
+        if all(self._occupied(0, column) for column in range(self._columns)):
+            self._outcome = 0
+            return
+
         delta = self._k - 1
 
         top = max(0, row - delta)
@@ -87,23 +83,23 @@ class ConnectK:
         left = max(0, column - delta)
         right = min(self._columns - 1, column + delta)
 
-        box = self._position[top:bottom+1, left:right+1, 1]
+        box = self._position[1, top:bottom+1, left:right+1]
 
-        vectors = (np.transpose(box[row - top, :]), box[:, column - left], np.diag(box, top - row), np.diag(np.flip(box, 1), top - row))
+        vectors = (np.transpose(box[row - top, :]), box[:, column - left],
+                   np.diag(box, top - row), np.diag(np.flip(box, 1), top - row))
 
-        if any(_k_connected(vector, self._k) for vector in vectors):
+        if any(self._k_connected(vector) for vector in vectors):
             self._outcome = -1
 
+    def _k_connected(self, vector):
+        run = 0
 
-def _k_connected(vector, k):
-    run = 0
+        for i in range(len(vector)):
+            if vector[i]:
+                run += 1
+                if run >= self._k:
+                    return True
+            else:
+                run = 0
 
-    for i in range(len(vector)):
-        if vector[i]:
-            run += 1
-            if run >= k:
-                return True
-        else:
-            run = 0
-
-    return False
+        return False

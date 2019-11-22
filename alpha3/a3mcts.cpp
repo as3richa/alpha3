@@ -6,11 +6,9 @@
 struct PythonHandle {
   PyObject *object;
 
-  PythonHandle() : object(NULL) {
-  }
+  PythonHandle() : object(NULL) {}
 
-  PythonHandle(PyObject *object_) : object(object_) {
-  }
+  PythonHandle(PyObject *object_) : object(object_) {}
 
   static PythonHandle copy(PyObject *object) {
     Py_INCREF(object);
@@ -40,13 +38,9 @@ struct PythonHandle {
     return object_;
   }
 
-  ~PythonHandle() {
-    Py_XDECREF(object);
-  }
+  ~PythonHandle() { Py_XDECREF(object); }
 
-  bool null() const {
-    return object == NULL;
-  }
+  bool null() const { return object == NULL; }
 };
 
 struct TypeSpec {
@@ -63,7 +57,8 @@ struct PyMCTS {
   PyObject_HEAD MCTS<PythonHandle, PythonHandle> mcts;
 };
 
-static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwargs);
+static PyObject *mcts_create(PyTypeObject *type, PyObject *args,
+                             PyObject *kwargs);
 
 static void mcts_destroy(PyObject *self);
 
@@ -72,9 +67,12 @@ static PyObject *mcts_expanded(PyObject *self, PyObject *args);
 static PyObject *mcts_complete(PyObject *self, PyObject *args);
 static PyObject *mcts_collected(PyObject *self, PyObject *args);
 static PyObject *mcts_turns(PyObject *self, PyObject *args);
-static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args, PyObject *kwargs);
+static PyObject *mcts_searches_this_turn(PyObject *self, PyObject *args);
+static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args,
+                                          PyObject *kwargs);
 static PyObject *mcts_select_leaf(PyObject *self, PyObject *args);
-static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs);
+static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args,
+                                  PyObject *kwargs);
 static PyObject *mcts_move_greedy(PyObject *self, PyObject *args);
 static PyObject *mcts_move_proportional(PyObject *self, PyObject *args);
 static PyObject *mcts_collect_result(PyObject *self, PyObject *args);
@@ -86,20 +84,20 @@ static PyMethodDef mcts_methods[] = {
     {"complete", mcts_complete, METH_NOARGS, NULL},
     {"collected", mcts_collected, METH_NOARGS, NULL},
     {"turns", mcts_turns, METH_NOARGS, NULL},
-    {"add_dirichlet_noise",
-     (PyCFunction)mcts_add_dirichlet_noise,
-     METH_VARARGS | METH_KEYWORDS,
-     NULL},
+    {"searches_this_turn", mcts_searches_this_turn, METH_NOARGS, NULL},
+    {"add_dirichlet_noise", (PyCFunction)mcts_add_dirichlet_noise,
+     METH_VARARGS | METH_KEYWORDS, NULL},
     {"select_leaf", mcts_select_leaf, METH_NOARGS, NULL},
-    {"expand_leaf", (PyCFunction)mcts_expand_leaf, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"expand_leaf", (PyCFunction)mcts_expand_leaf, METH_VARARGS | METH_KEYWORDS,
+     NULL},
     {"move_greedy", mcts_move_greedy, METH_NOARGS, NULL},
     {"move_proportional", mcts_move_proportional, METH_NOARGS, NULL},
     {"collect_result", mcts_collect_result, METH_NOARGS, NULL},
     {"reset", (PyCFunction)mcts_reset, METH_VARARGS | METH_KEYWORDS, NULL},
     {NULL, NULL, -1, NULL}};
 
-const static TypeSpec mcts_typespec = {
-    "MCTS", sizeof(PyMCTS), mcts_create, mcts_destroy, mcts_methods};
+const static TypeSpec mcts_typespec = {"MCTS", sizeof(PyMCTS), mcts_create,
+                                       mcts_destroy, mcts_methods};
 
 static PyModuleDef module_defn = {
     PyModuleDef_HEAD_INIT, "a3mcts", NULL, 0, NULL, NULL, NULL, NULL, NULL};
@@ -138,7 +136,8 @@ extern "C" PyObject *PyInit_a3mcts(void) {
     return NULL;
   }
 
-  if (PyModule_AddObject(module.object, mcts_typespec.name, mcts_type.object) < 0) {
+  if (PyModule_AddObject(module.object, mcts_typespec.name, mcts_type.object) <
+      0) {
     return NULL;
   }
 
@@ -174,7 +173,8 @@ static PythonHandle create_type(const TypeSpec *spec) {
   return type;
 }
 
-static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwargs) {
+static PyObject *mcts_create(PyTypeObject *type, PyObject *args,
+                             PyObject *kwargs) {
   PyObject *initial_state;
   double c_init;
   double c_base;
@@ -183,10 +183,11 @@ static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwarg
   static char c_base_str[] = "c_base";
   static char initial_state_str[] = "initial_state";
 
-  static char *keyword_names[] = {c_init_str, c_base_str, initial_state_str, NULL};
+  static char *keyword_names[] = {c_init_str, c_base_str, initial_state_str,
+                                  NULL};
 
-  if (!PyArg_ParseTupleAndKeywords(
-          args, kwargs, "ddO", keyword_names, &c_init, &c_base, &initial_state)) {
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ddO", keyword_names, &c_init,
+                                   &c_base, &initial_state)) {
     return NULL;
   }
 
@@ -200,7 +201,8 @@ static PyObject *mcts_create(PyTypeObject *type, PyObject *args, PyObject *kwarg
 
   try {
     new (location) MCTS<PythonHandle, PythonHandle>(
-        c_init, c_base, PythonHandle::copy(initial_state), PythonHandle::copy(Py_None));
+        c_init, c_base, PythonHandle::copy(initial_state),
+        PythonHandle::copy(Py_None));
   } catch (std::bad_alloc &) {
     PyErr_NoMemory();
     return NULL;
@@ -258,10 +260,29 @@ static PyObject *mcts_collected(PyObject *self, PyObject *args) {
 static PyObject *mcts_turns(PyObject *self, PyObject *args) {
   (void)args;
   auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.collected()) {
+    PyErr_SetString(PyExc_RuntimeError, "results were already collected");
+    return NULL;
+  }
+
   return PyLong_FromSize_t(mcts.turns());
 }
 
-static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args, PyObject *kwargs) {
+static PyObject *mcts_searches_this_turn(PyObject *self, PyObject *args) {
+  (void)args;
+  auto &mcts = ((PyMCTS *)self)->mcts;
+
+  if (mcts.collected()) {
+    PyErr_SetString(PyExc_RuntimeError, "results were already collected");
+    return NULL;
+  }
+
+  return PyLong_FromSize_t(mcts.searches_this_turn());
+}
+
+static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args,
+                                          PyObject *kwargs) {
   static char alpha_str[] = "alpha";
   static char *keyword_names[] = {alpha_str, NULL};
 
@@ -313,7 +334,8 @@ static PyObject *mcts_select_leaf(PyObject *self, PyObject *args) {
   return tuple.steal();
 }
 
-static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwargs) {
+static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args,
+                                  PyObject *kwargs) {
   PyObject *leaf_capsule;
   double av;
   PyObject *expansion_sequence;
@@ -324,8 +346,8 @@ static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwar
 
   static char *keyword_names[] = {leaf_str, av_str, expansion_str, NULL};
 
-  if (!PyArg_ParseTupleAndKeywords(
-          args, kwargs, "OdO", keyword_names, &leaf_capsule, &av, &expansion_sequence)) {
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OdO", keyword_names,
+                                   &leaf_capsule, &av, &expansion_sequence)) {
     return NULL;
   }
 
@@ -334,7 +356,8 @@ static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwar
     return NULL;
   }
 
-  auto leaf = (MCTS<PythonHandle, PythonHandle>::Node *)PyCapsule_GetPointer(leaf_capsule, "Node");
+  auto leaf = (MCTS<PythonHandle, PythonHandle>::Node *)PyCapsule_GetPointer(
+      leaf_capsule, "Node");
 
   if (leaf == NULL) {
     return NULL;
@@ -363,12 +386,14 @@ static PyObject *mcts_expand_leaf(PyObject *self, PyObject *args, PyObject *kwar
     PyObject *game_state;
     double prior_probability;
 
-    if (!PyArg_ParseTuple(expansion_elem.object, "OOd", &move, &game_state, &prior_probability)) {
+    if (!PyArg_ParseTuple(expansion_elem.object, "OOd", &move, &game_state,
+                          &prior_probability)) {
       return NULL;
     }
 
     MCTS<PythonHandle, PythonHandle>::ExpansionEntry expansion_entry = {
-        PythonHandle::copy(move), PythonHandle::copy(game_state), prior_probability};
+        PythonHandle::copy(move), PythonHandle::copy(game_state),
+        prior_probability};
 
     expansion.emplace_back(std::move(expansion_entry));
   }
@@ -395,10 +420,12 @@ static PyObject *mcts_move_greedy(PyObject *self, PyObject *args) {
 
   if (!mcts.expanded()) {
     PyErr_SetString(PyExc_RuntimeError, "root node hasn't been expanded");
+    return NULL;
   }
 
   if (mcts.complete()) {
     PyErr_SetString(PyExc_RuntimeError, "game is over");
+    return NULL;
   }
 
   try {
@@ -417,10 +444,12 @@ static PyObject *mcts_move_proportional(PyObject *self, PyObject *args) {
 
   if (!mcts.expanded()) {
     PyErr_SetString(PyExc_RuntimeError, "root node hasn't been expanded");
+    return NULL;
   }
 
   if (mcts.complete()) {
     PyErr_SetString(PyExc_RuntimeError, "game is over");
+    return NULL;
   }
 
   try {
@@ -442,7 +471,8 @@ static PyObject *mcts_collect_result(PyObject *self, PyObject *args) {
     return NULL;
   }
 
-  std::pair<double, std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry>> result;
+  std::pair<double, std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry>>
+      result;
 
   try {
     result = mcts.collect_result();
@@ -453,25 +483,30 @@ static PyObject *mcts_collect_result(PyObject *self, PyObject *args) {
 
   PythonHandle av = PyFloat_FromDouble(result.first);
 
-  std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry> &history = result.second;
+  std::vector<MCTS<PythonHandle, PythonHandle>::HistoryEntry> &history =
+      result.second;
 
   PythonHandle history_list = iterator_to_list(
-      history.begin(), history.end(), [](MCTS<PythonHandle, PythonHandle>::HistoryEntry &entry) {
-        const auto lambda = [](std::pair<PythonHandle, double> &move_and_probability) {
-          PythonHandle tuple(
-              Py_BuildValue("Nd", move_and_probability.first.object, move_and_probability.second));
+      history.begin(), history.end(),
+      [](MCTS<PythonHandle, PythonHandle>::HistoryEntry &entry) {
+        const auto lambda =
+            [](std::pair<PythonHandle, double> &move_and_probability) {
+              PythonHandle tuple(
+                  Py_BuildValue("Nd", move_and_probability.first.object,
+                                move_and_probability.second));
 
-          if (tuple.null()) {
-            return PythonHandle(NULL);
-          }
+              if (tuple.null()) {
+                return PythonHandle(NULL);
+              }
 
-          move_and_probability.first.steal();
+              move_and_probability.first.steal();
 
-          return tuple;
-        };
+              return tuple;
+            };
 
-        PythonHandle search_probabilities = iterator_to_list(
-            entry.search_probabilities.begin(), entry.search_probabilities.end(), lambda);
+        PythonHandle search_probabilities =
+            iterator_to_list(entry.search_probabilities.begin(),
+                             entry.search_probabilities.end(), lambda);
 
         PythonHandle tuple(PyTuple_New(2));
 
@@ -503,7 +538,8 @@ static PyObject *mcts_reset(PyObject *self, PyObject *args, PyObject *kwargs) {
 
   PyObject *initial_state;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keyword_names, &initial_state)) {
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", keyword_names,
+                                   &initial_state)) {
     return NULL;
   }
 
@@ -524,6 +560,7 @@ static bool assert_tuple_length(PyObject *tuple, size_t length) {
     return true;
   }
 
-  PyErr_Format(PyExc_TypeError, "expected a tuple of length %u", (unsigned int)length);
+  PyErr_Format(PyExc_TypeError, "expected a tuple of length %u",
+               (unsigned int)length);
   return false;
 }
