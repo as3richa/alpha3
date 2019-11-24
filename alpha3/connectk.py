@@ -71,32 +71,31 @@ class ConnectK:
         return self._position[0, row, column] or self._position[1, row, column]
 
     def _check_for_game_over(self, row, column):
-        if all(self._occupied(0, column) for column in range(self._columns)):
+        if row == 0 and all(self._occupied(0, column) for column in range(self._columns)):
             self._outcome = 0
             return
 
-        delta = self._k - 1
+        for dr, dc in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            vector = []
 
-        top = max(0, row - delta)
-        bottom = min(self._rows - 1, row + delta)
+            for i in range(-(self._k - 1), self._k):
+                r = row + dr * i
+                c = column + dc * i
 
-        left = max(0, column - delta)
-        right = min(self._columns - 1, column + delta)
+                if 0 <= r < self._rows and 0 <= c < self._columns:
+                    vector.append(self._position[1, r, c])
 
-        box = self._position[1, top:bottom+1, left:right+1]
-
-        vectors = (np.transpose(box[row - top, :]), box[:, column - left],
-                   np.diag(box, top - row), np.diag(np.flip(box, 1), top - row))
-
-        if any(self._k_connected(vector) for vector in vectors):
-            self._outcome = -1
+            if self._k_connected(vector):
+                self._outcome = -1
+                return
 
     def _k_connected(self, vector):
         run = 0
 
-        for i in range(len(vector)):
-            if vector[i]:
+        for bit in vector:
+            if bit:
                 run += 1
+
                 if run >= self._k:
                     return True
             else:

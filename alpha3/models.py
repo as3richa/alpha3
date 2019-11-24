@@ -5,8 +5,7 @@ class ConvolutionalBlock(layers.Layer):
     def __init__(self, filters, kernel_size):
         super(ConvolutionalBlock, self).__init__()
 
-        self._convolution = layers.Conv2D(
-            filters, kernel_size, data_format="channels_last", padding="same")
+        self._convolution = layers.Conv2D(filters, kernel_size, padding="same")
         self._batch_norm = layers.BatchNormalization()
         self._activation = layers.Activation("relu")
 
@@ -38,14 +37,14 @@ class ConvNet3x3(keras.Model):
 
         self._outcome_head = [
             ConvolutionalBlock(1, 1),
-            layers.Flatten(data_format="channels_last"),
+            layers.Flatten(),
             layers.Dense(64, activation="relu"),
             layers.Dense(1, activation="tanh")
         ]
 
         self._policy_head = [
             ConvolutionalBlock(2, 1),
-            layers.Flatten(data_format="channels_last"),
+            layers.Flatten(),
             layers.Dense(columns, activation="softmax")
         ]
 

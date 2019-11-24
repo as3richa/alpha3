@@ -284,18 +284,20 @@ static PyObject *mcts_searches_this_turn(PyObject *self, PyObject *args) {
 static PyObject *mcts_add_dirichlet_noise(PyObject *self, PyObject *args,
                                           PyObject *kwargs) {
   static char alpha_str[] = "alpha";
-  static char *keyword_names[] = {alpha_str, NULL};
+  static char fraction_str[] = "fraction";
+  static char *keyword_names[] = {alpha_str, fraction_str, NULL};
 
   double alpha;
+  double fraction;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "d", keyword_names, &alpha)) {
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "dd", keyword_names, &alpha, &fraction)) {
     return NULL;
   }
 
   auto &mcts = ((PyMCTS *)self)->mcts;
 
   try {
-    mcts.add_dirichlet_noise(alpha);
+    mcts.add_dirichlet_noise(alpha, fraction);
   } catch (std::bad_alloc &) {
     PyErr_NoMemory();
     return NULL;

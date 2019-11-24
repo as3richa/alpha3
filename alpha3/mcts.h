@@ -178,7 +178,7 @@ public:
     return searches_this_turn_;
   }
 
-  void add_dirichlet_noise(double alpha) {
+  void add_dirichlet_noise(double alpha, double fraction) {
     assert(expanded() && !complete());
 
     std::gamma_distribution<double> gamma(alpha, 1.0);
@@ -187,8 +187,9 @@ public:
     double sum = 0.0;
 
     for (Node *child = root->child; child != nullptr; child = child->sibling) {
-      noise.push_back(gamma(generator));
-      sum += noise.back();
+      const double value = gamma(generator);
+      noise.push_back(value);
+      sum += value;
     }
 
     for (auto &value : noise) {
@@ -198,7 +199,7 @@ public:
     auto it = noise.begin();
 
     for (Node *child = root->child; child != nullptr; child = child->sibling) {
-      child->prior_probability += *it;
+      child->prior_probability = fraction * (*it) + (1 - fraction) * child->prior_probability;
       ++it;
     }
   }
@@ -210,6 +211,7 @@ public:
       if (node->terminal()) {
         node->n_visits++;
         ascend_tree(node->parent, -node->total_av);
+        searches_this_turn_++;
         return nullptr;
       }
 
@@ -339,7 +341,7 @@ public:
 
     play_move(nullptr);
 
-    if (history.size() % 2 == 1) {
+    if (history.size() % 2 == 0) {
       score *= -1;
     }
 
